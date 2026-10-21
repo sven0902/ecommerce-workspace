@@ -1,0 +1,3 @@
+import {getChatGPTUser} from '../../../chatgpt-auth';
+import {shopifyGraphql} from '../../../../lib/shopify';
+export async function GET(req:Request){const user=await getChatGPTUser();if(!user)return Response.json({error:'Sign in first.'},{status:401});try{const shop=new URL(req.url).searchParams.get('shop')??'';const data=await shopifyGraphql(user.userId,shop,`query { products(first: 30, sortKey: UPDATED_AT, reverse: true) { nodes { id title handle status onlineStoreUrl description featuredMedia { preview { image { url } } } } } }`);return Response.json({products:data.products.nodes},{headers:{'Cache-Control':'private, no-store'}})}catch(e){return Response.json({error:e instanceof Error?e.message:'Could not load products.'},{status:400})}}

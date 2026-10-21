@@ -1,0 +1,7 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {createHmac} from 'node:crypto';
+import {shopDomain,seal,unseal,verifyCallback} from '../lib/shopify-security.ts';
+test('shop host blocks redirects, localhost and lookalike domains',()=>{assert.equal(shopDomain('https://test-shop.myshopify.com/'),'test-shop.myshopify.com');for(const host of ['localhost','evil.com','test.myshopify.com.evil.com','test.myshopify.com@evil.com','test.myshopify.com/admin','test.myshopify.com:443'])assert.throws(()=>shopDomain(host));});
+test('token ciphertext is bound to owner and store',()=>{const cipher=seal({access_token:'test-token'},'test-secret','alice:shop');assert.equal(unseal(cipher,'test-secret','alice:shop').access_token,'test-token');assert.throws(()=>unseal(cipher,'test-secret','bob:shop'));assert.throws(()=>unseal(cipher,'wrong-secret','alice:shop'));assert.ok(!cipher.includes('test-token'));});
+test('callback signature rejects tampered parameters and duplicates',()=>{const params=new URLSearchParams({code:'code',shop:'test.myshopify.com',state:'nonce',timestamp:'123'});const signature=createHmac('sha256','secret').update([...params].sort().map(([k,v])=>`${k}=${v}`).join('&')).digest('hex');params.set('hmac',signature);assert.equal(verifyCallback(params,'secret'),true);params.set('shop','evil.myshopify.com');assert.equal(verifyCallback(params,'secret'),false);params.set('shop','test.myshopify.com');params.append('state','nonce');assert.equal(verifyCallback(params,'secret'),false);});
