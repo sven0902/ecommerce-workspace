@@ -2,7 +2,7 @@
 import {useEffect,useState,useRef} from 'react';
 type Task={approvals?:{request_id:string;request:{origin:string;reason?:string|null}}[];id:string;title?:string;status:string;error?:string;createdAt:string;result?:{result:{summary:string;blockers:string[];products:{id:string;title:string;sourceUrl:string}[];creatives:{id:string;audience:string;angle:string;primaryText:string;headline:string;sourceUrl:string}[]};artifacts:{id:string;path:string;size_bytes:number}[]}};
 export default function ExecutionPanel({refresh,onCompleted}:{refresh:number;onCompleted:()=>void}){
- const [tasks,setTasks]=useState<Task[]>([]),[error,setError]=useState('');
+ const [tasks,setTasks]=useState<Task[]>([]),[error,setError]=useState(''),[loading,setLoading]=useState(true);
  async function retry(taskId:string){
   try{const r=await fetch('/api/tasks/retry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({taskId})});const d=await r.json() as {error?:string};if(!r.ok)throw new Error(d.error);setTasks(old=>old.map(t=>t.id===taskId?{...t,status:'submitting',error:undefined}:t));setError('');}catch(e){setError(e instanceof Error?e.message:'Retry failed.');}
  }
@@ -17,26 +17,35 @@ export default function ExecutionPanel({refresh,onCompleted}:{refresh:number;onC
   let stopped=false;let timer:ReturnType<typeof setTimeout>;
   async function poll(){
    try{
-    const response=await fetch('/api/tasks');if(!response.ok)throw new Error('Could not load tasks.');
+    const response=await fetch('/api/tasks',{signal:AbortSignal.timeout(15000)});if(!response.ok)throw new Error('Could not load tasks.');
     const data=await response.json() as {tasks:Task[]};
-    const updated:Task[]=[];
+    // Show durable records before waiting for remote agent status.
+    if(stopped)return;
+    setTasks([...data.tasks].sort((a,b)=>b.createdAt.localeCompare(a.createdAt)));setLoading(false);
+    const updated:Task[]=[];let statusUnavailable=false;
     for(const task of data.tasks){
      if(['starting','submitting','running','needs_input','verifying'].includes(task.status)){
-      const r=await fetch('/api/tasks?id='+encodeURIComponent(task.id));
-      updated.push(r.ok?(await r.json() as {task:Task}).task:task);
+      try{
+       const r=await fetch('/api/tasks?id='+encodeURIComponent(task.id),{signal:AbortSignal.timeout(20000)});
+       if(!r.ok)throw new Error('Status unavailable');
+       const fresh=(await r.json() as {task:Task}).task;updated.push(fresh);
+       if(!stopped)setTasks(old=>old.map(t=>t.id===fresh.id?fresh:t));
+      }catch{updated.push(task);statusUnavailable=true;}
+      if(stopped)return;
      }else updated.push(task);
     }
     if(!stopped){
      const newlyCompleted=updated.filter(t=>t.status==='review'&&!seen.current.has(t.id));
      for(const task of newlyCompleted)seen.current.add(task.id);
-     setTasks(updated.sort((a,b)=>b.createdAt.localeCompare(a.createdAt)));setError('');
+     setTasks(updated.sort((a,b)=>b.createdAt.localeCompare(a.createdAt)));setError(statusUnavailable?'Showing saved tasks. Live status is temporarily unavailable; it will retry automatically.':'');
      if(newlyCompleted.length)completed.current();
     }
-   }catch{if(!stopped)setError('Could not refresh tasks. Your work has not been restarted.');}
+   }catch{if(!stopped){setLoading(false);setError('Could not refresh tasks. Your work has not been restarted.');}}
    if(!stopped)timer=setTimeout(poll,10000);
   }
   void poll();return()=>{stopped=true;clearTimeout(timer);};
  },[refresh]);
+ if(loading&&!tasks.length)return <section className="conversation" aria-label="Executing tasks"><p role="status">Loading your tasks…</p></section>;
  if(!tasks.length&&!error)return null;
  return <section className="conversation" aria-label="Executing tasks"><h2>Your tasks</h2>{error&&<p role="status">{error}</p>}{tasks.map(task=><article key={task.id}>
   <div className="card-top"><strong>{task.title||'Preparing your products and ads'}</strong><span className="pill">{task.status==='review'?(task.result?.result.blockers.length?'Partial result':'Ready for review'):task.status.replace('_',' ')}</span></div>
